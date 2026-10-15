@@ -1,5 +1,4 @@
 import torch
-from pytorch3d.transforms import matrix_to_euler_angles 
 
 from .loss_util import compute_photometric_loss, compute_masked_loss
 from .single_cam_loss import SingleCamLoss
@@ -64,6 +63,8 @@ class MultiCamLoss(SingleCamLoss):
         """
         This function computes pose consistency loss in "Full surround monodepth from multiple cameras"
         """        
+        from pytorch3d.transforms import matrix_to_euler_angles
+
         ref_output = outputs[('cam', 0)]
         ref_ext = inputs['extrinsics'][:, 0, ...]
         ref_ext_inv = inputs['extrinsics_inv'][:, 0, ...]
