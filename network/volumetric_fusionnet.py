@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from pytorch3d.transforms import axis_angle_to_matrix
 
 from .blocks import conv2d, conv1d, pack_cam_feat
 
@@ -251,6 +250,8 @@ class VFNet(nn.Module):
         """
         This function augments depth estimation results using augmented extrinsics [batch, cam, 4, 4]  
         """
+        from pytorch3d.transforms import axis_angle_to_matrix
+
         with torch.no_grad():
             b, cam, _, _ = ext.size()
             ext_aug = ext.clone()

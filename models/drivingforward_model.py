@@ -195,7 +195,7 @@ class DrivingForwardModel(BaseModel):
         for cam in range(self.num_cams):
             outputs[('cam', cam)] = {}
 
-        pose_pred = self.predict_pose(inputs)
+        pose_pred = self.predict_pose(inputs) if self.mode == 'train' else None
         depth_feats = self.predict_depth(inputs)
 
         for cam in range(self.num_cams):       

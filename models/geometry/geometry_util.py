@@ -1,13 +1,14 @@
 import numpy as np
 import torch
 import torch.nn as nn
-from pytorch3d.transforms import axis_angle_to_matrix 
 
         
 def vec_to_matrix(rot_angle, trans_vec, invert=False):
     """
     This function transforms rotation angle and translation vector into 4x4 matrix.
     """
+    from pytorch3d.transforms import axis_angle_to_matrix
+
     # initialize matrices
     b, _, _ = rot_angle.shape
     R_mat = torch.eye(4).repeat([b, 1, 1]).to(device=rot_angle.device)
