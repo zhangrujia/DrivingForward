@@ -152,6 +152,10 @@ class DrivingForwardTrainer:
         count = 0
 
         process = tqdm(eval_dataloader)
+        debug = getattr(self, 'debug', False)
+        debug_samples = getattr(self, 'debug_samples', 3)
+        if debug:
+            print(f'[DEBUG] debug mode on: running only {debug_samples} sample(s)')
         for batch_idx, inputs in enumerate(process):
             outputs, _ = model.process_batch(inputs, self.rank)
             
@@ -166,10 +170,16 @@ class DrivingForwardTrainer:
 
             print(f"\n{inputs['token'][0]}")
             print(f"avg PSNR: {avg_reconstruction_metric['psnr']/count:.4f}, avg SSIM: {avg_reconstruction_metric['ssim']/count:.4f}, avg LPIPS: {avg_reconstruction_metric['lpips']/count:.4f}")
-            
-        avg_reconstruction_metric['psnr'] /= len(eval_dataloader)
-        avg_reconstruction_metric['ssim'] /= len(eval_dataloader)
-        avg_reconstruction_metric['lpips'] /= len(eval_dataloader)
+
+            if debug and count >= debug_samples:
+                print(f'[DEBUG] stopped after {count} sample(s)')
+                break
+
+        # average over the number of samples actually processed
+        divisor = count if debug else len(eval_dataloader)
+        avg_reconstruction_metric['psnr'] /= divisor
+        avg_reconstruction_metric['ssim'] /= divisor
+        avg_reconstruction_metric['lpips'] /= divisor
 
         print('Evaluation reconstruction result...\n')
         self.logger.print_perf(avg_reconstruction_metric, 'reconstruction')

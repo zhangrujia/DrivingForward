@@ -37,7 +37,8 @@ def get_relcam(cameras):
     return relcam_dict        
     
 
-def get_config(config, mode='train', weight_path='./', novel_view_mode='MF'):
+def get_config(config, mode='train', weight_path='./', novel_view_mode='MF',
+               debug=False, debug_samples=3):
     """
     This function reads the configuration file and return as dictionary
     """
@@ -63,6 +64,8 @@ def get_config(config, mode='train', weight_path='./', novel_view_mode='MF'):
             cfg['ddp']['gpus'] = [0]
             cfg['training']['batch_size'] = cfg['eval']['eval_batch_size']
             cfg['training']['depth_flip'] = False
+            cfg['eval']['debug'] = debug
+            cfg['eval']['debug_samples'] = debug_samples
     return cfg
 
     
