@@ -12,6 +12,27 @@ def get_adj_cams(cam):
     adj_cams.append(right_cam_dict[cam])
     return adj_cams
 
+def _collect_valid_gaussians(outputs, cam, frame_id, i):
+    """Extract the valid (masked) Gaussians of one camera/frame for sample i.
+
+    Returns (xyz, rot, scale, opacity, sh) tensors, each already filtered by
+    the per-point validity mask. Used both for rendering aggregation and for
+    the optional full-scene .ply export.
+    """
+    valid_i = outputs[('cam', cam)][('pts_valid', frame_id, 0)][i, :]
+    xyz_i = outputs[('cam', cam)][('xyz', frame_id, 0)][i, :, :]
+    rot_i = outputs[('cam', cam)][('rot_maps', frame_id, 0)][i, :, :, :].permute(1, 2, 0).view(-1, 4)
+    scale_i = outputs[('cam', cam)][('scale_maps', frame_id, 0)][i, :, :, :].permute(1, 2, 0).view(-1, 3)
+    opacity_i = outputs[('cam', cam)][('opacity_maps', frame_id, 0)][i, :, :, :].permute(1, 2, 0).view(-1, 1)
+    sh_i = rearrange(outputs[('cam', cam)][('sh_maps', frame_id, 0)][i, :, :, :], "p srf r xyz d_sh -> (p srf r) d_sh xyz").contiguous()
+    return (
+        xyz_i[valid_i].view(-1, 3),
+        rot_i[valid_i].view(-1, 4),
+        scale_i[valid_i].view(-1, 3),
+        opacity_i[valid_i].view(-1, 1),
+        sh_i[valid_i],
+    )
+
 def pts2render(inputs, outputs, cam_num, novel_cam, novel_frame_id, bg_color, mode='MF',
                export_ply_path=None):
     bs, _, height, width = inputs[('color', 0, 0)][:, novel_cam, ...].shape
@@ -26,40 +47,22 @@ def pts2render(inputs, outputs, cam_num, novel_cam, novel_frame_id, bg_color, mo
         if mode == 'SF':
             frame_id = 0
             for cam in range(cam_num):
-                valid_i = outputs[('cam', cam)][('pts_valid', frame_id, 0)][i, :]
-                xyz_i = outputs[('cam', cam)][('xyz', frame_id, 0)][i, :, :]
-                # rgb_i = inputs[('color', frame_id, 0)][:, cam, ...][i, :, :, :].permute(1, 2, 0).view(-1, 3) # HWC
-                
-                rot_i = outputs[('cam', cam)][('rot_maps', frame_id, 0)][i, :, :, :].permute(1, 2, 0).view(-1, 4)
-                scale_i = outputs[('cam', cam)][('scale_maps', frame_id, 0)][i, :, :, :].permute(1, 2, 0).view(-1, 3)
-                opacity_i = outputs[('cam', cam)][('opacity_maps', frame_id, 0)][i, :, :, :].permute(1, 2, 0).view(-1, 1)
-                sh_i = rearrange(outputs[('cam', cam)][('sh_maps', frame_id, 0)][i, :, :, :], "p srf r xyz d_sh -> (p srf r) d_sh xyz").contiguous()
-
-                xyz_i_valid.append(xyz_i[valid_i].view(-1, 3))
-                # rgb_i_valid.append(rgb_i[valid_i].view(-1, 3))
-                rot_i_valid.append(rot_i[valid_i].view(-1, 4))
-                scale_i_valid.append(scale_i[valid_i].view(-1, 3))
-                opacity_i_valid.append(opacity_i[valid_i].view(-1, 1))
-                sh_i_valid.append(sh_i[valid_i])
+                xyz_v, rot_v, scale_v, opacity_v, sh_v = _collect_valid_gaussians(outputs, cam, frame_id, i)
+                xyz_i_valid.append(xyz_v)
+                rot_i_valid.append(rot_v)
+                scale_i_valid.append(scale_v)
+                opacity_i_valid.append(opacity_v)
+                sh_i_valid.append(sh_v)
 
         elif mode == 'MF':
             for frame_id in [-1, 1]:
                 cam = novel_cam
-                valid_i = outputs[('cam', cam)][('pts_valid', frame_id, 0)][i, :]
-                xyz_i = outputs[('cam', cam)][('xyz', frame_id, 0)][i, :, :]
-                # rgb_i = inputs[('color', frame_id, 0)][:, cam, ...][i, :, :, :].permute(1, 2, 0).view(-1, 3) # HWC
-                    
-                rot_i = outputs[('cam', cam)][('rot_maps', frame_id, 0)][i, :, :, :].permute(1, 2, 0).view(-1, 4)
-                scale_i = outputs[('cam', cam)][('scale_maps', frame_id, 0)][i, :, :, :].permute(1, 2, 0).view(-1, 3)
-                opacity_i = outputs[('cam', cam)][('opacity_maps', frame_id, 0)][i, :, :, :].permute(1, 2, 0).view(-1, 1)
-                sh_i = rearrange(outputs[('cam', cam)][('sh_maps', frame_id, 0)][i, :, :, :], "p srf r xyz d_sh -> (p srf r) d_sh xyz").contiguous()
-
-                xyz_i_valid.append(xyz_i[valid_i].view(-1, 3))
-                # rgb_i_valid.append(rgb_i[valid_i].view(-1, 3))
-                rot_i_valid.append(rot_i[valid_i].view(-1, 4))
-                scale_i_valid.append(scale_i[valid_i].view(-1, 3))
-                opacity_i_valid.append(opacity_i[valid_i].view(-1, 1))
-                sh_i_valid.append(sh_i[valid_i])
+                xyz_v, rot_v, scale_v, opacity_v, sh_v = _collect_valid_gaussians(outputs, cam, frame_id, i)
+                xyz_i_valid.append(xyz_v)
+                rot_i_valid.append(rot_v)
+                scale_i_valid.append(scale_v)
+                opacity_i_valid.append(opacity_v)
+                sh_i_valid.append(sh_v)
 
         pts_xyz_i = torch.concat(xyz_i_valid, dim=0)
         # pts_rgb_i = torch.concat(rgb_i_valid, dim=0)
@@ -72,13 +75,42 @@ def pts2render(inputs, outputs, cam_num, novel_cam, novel_frame_id, bg_color, mo
         # optionally export the full 3D Gaussian scene for this sample to .ply
         if export_ply_path is not None:
             from .ply_export import export_gaussians_to_ply
-            # sh_i here is [N, d_sh, 3] (channel last), matching the exporter.
+
+            if mode == 'MF':
+                # Rendering only uses novel_cam's prev/next points, but the
+                # exported scene should be the full surround view: aggregate
+                # every camera across both temporal frames. All points are in
+                # the shared world/ego frame (via e2c/c2e extrinsics), so they
+                # align geometrically.
+                exp_xyz, exp_rot, exp_scale, exp_opacity, exp_sh = [], [], [], [], []
+                for cam in range(cam_num):
+                    for frame_id in [-1, 1]:
+                        xyz_v, rot_v, scale_v, opacity_v, sh_v = _collect_valid_gaussians(outputs, cam, frame_id, i)
+                        exp_xyz.append(xyz_v)
+                        exp_rot.append(rot_v)
+                        exp_scale.append(scale_v)
+                        exp_opacity.append(opacity_v)
+                        exp_sh.append(sh_v)
+                export_xyz = torch.concat(exp_xyz, dim=0)
+                export_rot = torch.concat(exp_rot, dim=0)
+                export_scale = torch.concat(exp_scale, dim=0)
+                export_opacity = torch.concat(exp_opacity, dim=0)
+                export_sh = torch.concat(exp_sh, dim=0)
+            else:
+                # SF already aggregates all cameras into pts_xyz_i etc.
+                export_xyz = pts_xyz_i
+                export_rot = rot_i
+                export_scale = scale_i
+                export_opacity = opacity_i
+                export_sh = sh_i
+
+            # sh here is [N, d_sh, 3] (channel last), matching the exporter.
             export_gaussians_to_ply(
-                xyz=pts_xyz_i,
-                rotation=rot_i,
-                scale=scale_i,
-                opacity=opacity_i,
-                sh=sh_i,
+                xyz=export_xyz,
+                rotation=export_rot,
+                scale=export_scale,
+                opacity=export_opacity,
+                sh=export_sh,
                 path=export_ply_path,
                 opacity_is_activated=True,
                 scale_is_activated=True,
