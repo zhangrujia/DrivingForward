@@ -66,6 +66,16 @@ def get_config(config, mode='train', weight_path='./', novel_view_mode='MF',
             cfg['training']['depth_flip'] = False
             cfg['eval']['debug'] = debug
             cfg['eval']['debug_samples'] = debug_samples
+
+            # separate output dirs per novel-view mode (SF/MF) and debug run,
+            # so results from different runs don't mix / overwrite each other.
+            suffix = '_' + novel_view_mode
+            if debug:
+                suffix += '_debug'
+            if 'save_path' in cfg['eval']:
+                cfg['eval']['save_path'] = cfg['eval']['save_path'] + suffix
+            if 'export_ply_path' in cfg['eval']:
+                cfg['eval']['export_ply_path'] = cfg['eval']['export_ply_path'] + suffix
     return cfg
 
     
