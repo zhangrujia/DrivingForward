@@ -403,6 +403,13 @@ class DrivingForwardModel(BaseModel):
         self.view_rendering(inputs, outputs, cam, rel_pose_dict) 
 
     def pred_gaussian_imgs(self, inputs, outputs, cam):
+        export_ply_path = None
+        if getattr(self, 'export_ply', False) and cam == 0:
+            token = inputs['token'][0] if 'token' in inputs else 'scene'
+            export_dir = getattr(self, 'export_ply_path', './results/ply')
+            import os
+            export_ply_path = os.path.join(export_dir, f'{token}.ply')
+
         if self.novel_view_mode == 'MF':
             outputs[('cam', cam)][('gaussian_color', 0, 0)] = \
                 pts2render(inputs=inputs, 
@@ -411,9 +418,10 @@ class DrivingForwardModel(BaseModel):
                            novel_cam=cam,
                            novel_frame_id=0,
                            bg_color=[1.0, 1.0, 1.0],
-                           mode=self.novel_view_mode)
+                           mode=self.novel_view_mode,
+                           export_ply_path=export_ply_path)
         elif self.novel_view_mode == 'SF':
-            for novel_frame_id in self.frame_ids[1:]:
+            for i, novel_frame_id in enumerate(self.frame_ids[1:]):
                 outputs[('cam', cam)][('gaussian_color', novel_frame_id, 0)] = \
                     pts2render(inputs=inputs, 
                                outputs=outputs, 
@@ -421,5 +429,6 @@ class DrivingForwardModel(BaseModel):
                                novel_cam=cam,
                                novel_frame_id=novel_frame_id, 
                                bg_color=[1.0, 1.0, 1.0],
-                               mode=self.novel_view_mode)
+                               mode=self.novel_view_mode,
+                               export_ply_path=export_ply_path if i == 0 else None)
 
