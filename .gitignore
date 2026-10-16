@@ -10,3 +10,5 @@ weights_SF
 weights_MF
 *.pyc
 pretrained
+.dgp
+input_data

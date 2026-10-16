@@ -83,6 +83,8 @@ eval:
   eval_visualize: False
   save_images: True
   save_path: './results/images'
+  export_ply: true
+  export_ply_path: './results/ply'
   
 load:
   pretrain: False

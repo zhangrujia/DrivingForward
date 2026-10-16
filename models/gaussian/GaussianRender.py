@@ -12,7 +12,8 @@ def get_adj_cams(cam):
     adj_cams.append(right_cam_dict[cam])
     return adj_cams
 
-def pts2render(inputs, outputs, cam_num, novel_cam, novel_frame_id, bg_color, mode='MF'):
+def pts2render(inputs, outputs, cam_num, novel_cam, novel_frame_id, bg_color, mode='MF',
+               export_ply_path=None):
     bs, _, height, width = inputs[('color', 0, 0)][:, novel_cam, ...].shape
     render_novel_list = []
     for i in range(bs):
@@ -67,6 +68,21 @@ def pts2render(inputs, outputs, cam_num, novel_cam, novel_frame_id, bg_color, mo
         scale_i = torch.concat(scale_i_valid, dim=0)
         opacity_i = torch.concat(opacity_i_valid, dim=0)
         sh_i = torch.concat(sh_i_valid, dim=0)
+
+        # optionally export the full 3D Gaussian scene for this sample to .ply
+        if export_ply_path is not None:
+            from .ply_export import export_gaussians_to_ply
+            # sh_i here is [N, d_sh, 3] (channel last), matching the exporter.
+            export_gaussians_to_ply(
+                xyz=pts_xyz_i,
+                rotation=rot_i,
+                scale=scale_i,
+                opacity=opacity_i,
+                sh=sh_i,
+                path=export_ply_path,
+                opacity_is_activated=True,
+                scale_is_activated=True,
+            )
 
         novel_FovX_i = outputs[('cam', novel_cam)][('FovX', novel_frame_id, 0)][i]
         novel_FovY_i = outputs[('cam', novel_cam)][('FovY', novel_frame_id, 0)][i]
