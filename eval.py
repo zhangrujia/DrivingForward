@@ -1,4 +1,5 @@
 import argparse 
+import os
  
 import torch
 torch.backends.cudnn.deterministic = True
@@ -26,6 +27,7 @@ def test(cfg):
 
 if __name__ == '__main__':
     args = parse_args()
-    cfg = utils.get_config(args.config_file, mode='eval', weight_path=args.weight_path, novel_view_mode=args.novel_view_mode)
+    weight_path = os.path.join('./pretrained', os.path.normpath(args.weight_path))
+    cfg = utils.get_config(args.config_file, mode='eval', weight_path=weight_path, novel_view_mode=args.novel_view_mode)
         
     test(cfg)

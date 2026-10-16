@@ -44,6 +44,7 @@ def construct_dataset(cfg, mode, **kwargs):
                 raise ValueError('Unknown novel view mode: ' + cfg['model']['novel_view_mode'])
         dataset = NuScenesdataset(
             cfg['data']['data_path'], split,
+            version=cfg['data'].get('version', 'v1.0-mini'),
             **dataset_args            
         )
     else:

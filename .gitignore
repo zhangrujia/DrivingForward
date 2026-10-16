@@ -9,3 +9,4 @@ results
 weights_SF
 weights_MF
 *.pyc
+pretrained

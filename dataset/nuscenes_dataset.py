@@ -74,9 +74,9 @@ class NuScenesdataset(Dataset):
                  with_pose=None,
                  with_ego_pose=None,
                  with_mask=None,
+                 version='v1.0-mini',
                  ):        
         super().__init__()
-        version = 'v1.0-trainval'
         self.path = path
         self.split = split
         self.dataset_idx = 0
