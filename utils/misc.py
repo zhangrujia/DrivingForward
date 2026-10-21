@@ -30,6 +30,10 @@ def get_relcam(cameras):
     indices = camera2ind(cameras)
     for ind in indices:
         relcam_dict[ind] = []
+        # Unknown cameras (not in the nuScenes layout, e.g. custom COLMAP
+        # captures) map to None and have no predefined spatial neighbours.
+        if ind is None or ind not in _REL_CAM_DICT:
+            continue
         relcam_cand = _REL_CAM_DICT[ind]
         for cand in relcam_cand:
             if cand in indices:
