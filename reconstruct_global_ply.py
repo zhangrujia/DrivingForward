@@ -135,12 +135,19 @@ def rotmat_to_quat(R):
 # ---------------------------------------------------------------------------
 # ego -> world transform of one frame's Gaussians
 # ---------------------------------------------------------------------------
-def transform_gaussians_to_world(xyz, rot, scale, opacity, sh, world_from_vehicle):
+def transform_gaussians_to_world(xyz, rot, scale, opacity, sh, world_from_vehicle,
+                                 rotate_sh_flag=False):
     """Apply a rigid ego->world transform to one frame's Gaussians.
 
     xyz      [N,3]   rot [N,4] (w,x,y,z)   scale [N,3]
     opacity  [N,1]   sh  [N,d_sh,3]
     world_from_vehicle: 4x4 numpy
+
+    rotate_sh_flag: if True, rotate high-order SH by R (view-dependent colour
+        stays correct under rotation). Off by default: the DC term (SH degree
+        0) is rotation-invariant and is what most 3DGS viewers render, so we
+        skip the expensive per-point Wigner-D (which can also OOM / trip CUBLAS
+        on millions of points). Enable for best fidelity on smaller clouds.
     """
     device = xyz.device
     R = torch.tensor(world_from_vehicle[:3, :3], dtype=torch.float32, device=device)
@@ -156,12 +163,22 @@ def transform_gaussians_to_world(xyz, rot, scale, opacity, sh, world_from_vehicl
     rot_w = quat_mul(q_R, rot)
     rot_w = torch.nn.functional.normalize(rot_w, dim=1)
 
-    # SH rotation (Wigner-D). sh: [N, d_sh, 3] -> rotate_sh wants [..., n] with
-    # the SH coeffs on the last axis, per channel. Transpose to [N,3,d_sh].
-    sh_t = sh.permute(0, 2, 1).contiguous()                 # [N,3,d_sh]
-    R_batch = R.view(1, 1, 3, 3).expand(sh_t.shape[0], sh_t.shape[1], 3, 3)
-    sh_rot = rotate_sh(sh_t, R_batch)                       # [N,3,d_sh]
-    sh_w = sh_rot.permute(0, 2, 1).contiguous()             # [N,d_sh,3]
+    # SH rotation (Wigner-D). sh: [N, d_sh, 3].
+    if rotate_sh_flag:
+        # rotate_sh expects the SH coeffs on the LAST axis and the rotation's
+        # batch dims to match the coeffs' leading dims. Rotate per colour
+        # channel: transpose to [N,3,d_sh] (batch=[N,3]), broadcast R to
+        # [N,3,3,3]. NOTE: e3nn's matrix_to_angles does
+        # `R @ R.new_tensor([0,1,0])`, which fails on CUDA for non-contiguous
+        # expanded tensors -> must be contiguous.
+        sh_t = sh.permute(0, 2, 1).contiguous()             # [N,3,d_sh]
+        R_batch = R.view(1, 1, 3, 3).expand(sh_t.shape[0], sh_t.shape[1], 3, 3)
+        R_batch = R_batch.contiguous()
+        sh_rot = rotate_sh(sh_t, R_batch)                   # [N,3,d_sh]
+        sh_w = sh_rot.permute(0, 2, 1).contiguous()         # [N,d_sh,3]
+    else:
+        # DC term (degree 0) is rotation-invariant; higher orders left as-is.
+        sh_w = sh
 
     return xyz_w, rot_w, scale, opacity, sh_w
 
@@ -211,6 +228,11 @@ def parse_args():
                         'random-subsamples if exceeded')
     p.add_argument('--out', default='./results/global.ply', type=str,
                    help='output .ply path')
+    p.add_argument('--rotate_sh', action='store_true',
+                   help='rotate high-order SH coefficients by the ego->world '
+                        'rotation (best fidelity, slower, can OOM on huge '
+                        'clouds). Default off: keep DC term only (rotation-'
+                        'invariant; what most viewers render).')
     return p.parse_args()
 
 
@@ -295,7 +317,8 @@ def main():
         opacity = torch.cat(fop, 0); sh = torch.cat(fsh, 0)
 
         xyz_w, rot_w, scale_w, op_w, sh_w = transform_gaussians_to_world(
-            xyz, rot, scale, opacity, sh, w_from_v)
+            xyz, rot, scale, opacity, sh, w_from_v,
+            rotate_sh_flag=args.rotate_sh)
 
         # per-frame voxel downsample to keep memory bounded while merging
         keep = voxel_downsample(xyz_w, args.voxel)
