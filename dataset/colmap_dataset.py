@@ -168,6 +168,12 @@ class ColmapDataset(torch.utils.data.Dataset):
             if self.with_pose:
                 data['extrinsics'] = extr
 
+            # Self-occlusion mask: custom captures have none, so use an
+            # all-ones mask (every pixel valid). The volumetric fusion net
+            # always reads inputs['mask']; this keeps all pixels active.
+            data['mask'] = torch.ones(1, self.height, self.width,
+                                      dtype=torch.float32)
+
             # temporal contexts
             if self.has_context:
                 ctx_imgs, ctx_poses = [], []
