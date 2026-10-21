@@ -32,8 +32,17 @@ data:
   back_context: 1
   forward_context: 1
   depth_type: 'lidar'          # unused by ColmapDataset (kept for parity)
-  # 4 pinhole wide cameras that are closest to the nuScenes-trained weights.
-  cameras: ['front_left_bottom_wide', 'front_right_bottom_wide', 'rear_left_bottom_wide', 'rear_right_bottom_wide']
+  # 6 cameras mapped onto the nuScenes layout order so the fusion net's
+  # 6-cam overlap grouping ([0,3,4] / [1,2,5]) applies. Semantic mapping:
+  #   0 CAM_FRONT       -> mid_center_top_wide   (front-centre; fisheye)
+  #   1 CAM_FRONT_LEFT  -> front_left_bottom_wide
+  #   2 CAM_FRONT_RIGHT -> front_right_bottom_wide
+  #   3 CAM_BACK_LEFT   -> rear_left_bottom_wide
+  #   4 CAM_BACK_RIGHT  -> rear_right_bottom_wide
+  #   5 CAM_BACK        -> rear_center_top_norm   (rear-centre)
+  # NOTE: this rig/intrinsics differ from nuScenes, so cross-camera fusion is
+  # only approximate -- expect poor metrics (flow-through / pipeline check).
+  cameras: ['mid_center_top_wide', 'front_left_bottom_wide', 'front_right_bottom_wide', 'rear_left_bottom_wide', 'rear_right_bottom_wide', 'rear_center_top_norm']
   # No lidar GT depth and no self-occlusion masks for custom data.
   train_requirements: (gt_pose, gt_ego_pose)
   val_requirements: (gt_pose, gt_ego_pose)
