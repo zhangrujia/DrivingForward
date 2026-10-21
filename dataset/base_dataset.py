@@ -1,10 +1,37 @@
-from external.dataset import get_transforms
-
-
 def construct_dataset(cfg, mode, **kwargs):
     """
     This function constructs datasets.
     """
+    # COLMAP (custom self-collected surround-view data). Handled first and
+    # independently so it never needs packnet's get_transforms.
+    if cfg['data']['dataset'] == 'colmap':
+        from dataset.colmap_dataset import ColmapDataset
+        if mode == 'train':
+            split = 'train'
+        elif cfg['model']['novel_view_mode'] == 'MF':
+            split = 'eval_MF'
+        elif cfg['model']['novel_view_mode'] == 'SF':
+            split = 'eval_SF'
+        else:
+            raise ValueError('Unknown novel view mode: '
+                             + cfg['model']['novel_view_mode'])
+
+        requirements = cfg['data'].get('val_requirements',
+                                       cfg['data'].get('train_requirements', ''))
+        colmap_args = {
+            'cameras': cfg['data']['cameras'],
+            'back_context': cfg['data']['back_context'],
+            'forward_context': cfg['data']['forward_context'],
+            'with_pose': 'gt_pose' in requirements,
+            'with_ego_pose': 'gt_ego_pose' in requirements,
+            'with_mask': 'mask' in requirements,
+            'image_shape': (int(cfg['training']['height']),
+                            int(cfg['training']['width'])),
+        }
+        return ColmapDataset(cfg['data']['data_path'], split, **colmap_args)
+
+    from external.dataset import get_transforms
+
     # dataset arguments for the dataloader
     if mode == 'train':
         dataset_args = {
