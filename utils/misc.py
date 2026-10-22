@@ -42,7 +42,8 @@ def get_relcam(cameras):
     
 
 def get_config(config, mode='train', weight_path='./', novel_view_mode='MF',
-               debug=False, debug_samples=3, scene=None):
+               debug=False, debug_samples=3, scene=None,
+               make_video=False, video_fps=6):
     """
     This function reads the configuration file and return as dictionary
     """
@@ -73,6 +74,8 @@ def get_config(config, mode='train', weight_path='./', novel_view_mode='MF',
             cfg['training']['depth_flip'] = False
             cfg['eval']['debug'] = debug
             cfg['eval']['debug_samples'] = debug_samples
+            cfg['eval']['make_video'] = make_video
+            cfg['eval']['video_fps'] = video_fps
 
             # separate output dirs per novel-view mode (SF/MF), scene, and debug
             # run, so results from different runs don't mix / overwrite each other.

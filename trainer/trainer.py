@@ -150,6 +150,7 @@ class DrivingForwardTrainer:
         avg_reconstruction_metric = defaultdict(float)
 
         count = 0
+        eval_tokens = []  # processed sample tokens, in evaluation (temporal) order
 
         process = tqdm(eval_dataloader)
         debug = getattr(self, 'debug', False)
@@ -165,6 +166,7 @@ class DrivingForwardTrainer:
             avg_reconstruction_metric['ssim'] += ssim
             avg_reconstruction_metric['lpips'] += lpips
             count += 1
+            eval_tokens.append(inputs['token'][0])
 
             process.set_description(f"PSNR: {psnr:.4f}, SSIM: {ssim:.4f}, LPIPS: {lpips:.4f}")
 
@@ -183,6 +185,34 @@ class DrivingForwardTrainer:
 
         print('Evaluation reconstruction result...\n')
         self.logger.print_perf(avg_reconstruction_metric, 'reconstruction')
+
+        # optionally encode per-camera side-by-side (GT | prediction) videos
+        # from the images just saved during evaluation.
+        if getattr(self, 'make_video', False):
+            self._make_eval_videos(eval_tokens)
+
+    def _make_eval_videos(self, eval_tokens):
+        """Encode one side-by-side (left=GT, right=prediction) mp4 per camera
+        from the images saved under self.save_path during evaluation."""
+        if not getattr(self, 'save_images', False):
+            print('[make_video] save_images is disabled, no images to encode. '
+                  'Enable save_images in the eval config to use --make_video.')
+            return
+        from utils.make_video import make_comparison_videos
+
+        cameras = getattr(self, 'cameras', None)
+        if not cameras:
+            cameras = [str(i) for i in range(self.num_cams)]
+        fps = getattr(self, 'video_fps', 6)
+        print(f'\n[make_video] encoding {self.num_cams} per-camera comparison '
+              f'video(s) from {len(eval_tokens)} frame(s) under {self.save_path}')
+        make_comparison_videos(
+            save_path=self.save_path,
+            tokens=eval_tokens,
+            cameras=cameras,
+            fps=fps,
+            cam_indices=list(range(self.num_cams)),
+        )
 
     def save_image(
         self,

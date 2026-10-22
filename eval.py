@@ -27,6 +27,12 @@ def parse_args():
     parser.add_argument('--list_scenes', action='store_true',
                         help='print the available capture videos (scenes) with their index / name / '
                              'frame count, then exit without running inference.')
+    parser.add_argument('--make_video', action='store_true',
+                        help='after inference, encode one side-by-side mp4 per camera from the saved '
+                             'images (left = ground-truth, right = prediction). Requires save_images '
+                             '(enabled by default in the eval config).')
+    parser.add_argument('--video_fps', default=6, type=int,
+                        help='frames per second for the generated per-camera videos (default: 6).')
     args = parser.parse_args() 
     return args
 
@@ -47,6 +53,7 @@ if __name__ == '__main__':
         raise SystemExit(0)
 
     cfg = utils.get_config(args.config_file, mode='eval', weight_path=weight_path, novel_view_mode=args.novel_view_mode,
-                           debug=args.debug, debug_samples=args.debug_samples, scene=args.scene)
+                           debug=args.debug, debug_samples=args.debug_samples, scene=args.scene,
+                           make_video=args.make_video, video_fps=args.video_fps)
         
     test(cfg)
