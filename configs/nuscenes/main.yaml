@@ -85,6 +85,12 @@ eval:
   save_path: './results/images'
   export_ply: true
   export_ply_path: './results/ply'
+  # .ply point-cloud downsampling (both null = keep ALL points / no thinning).
+  # Set to cap memory + file size on large scenes. voxel_size is applied first
+  # (keep one point per voxel edge, in world units ~meters), then max_points
+  # randomly subsamples if still above the cap.
+  export_ply_max_points: null
+  export_ply_voxel_size: null
   
 load:
   pretrain: False

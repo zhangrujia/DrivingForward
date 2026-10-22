@@ -97,6 +97,9 @@ eval:
   save_path: './results/images_colmap'
   export_ply: true
   export_ply_path: './results/ply_colmap'
+  # .ply downsampling (both null = keep ALL points). See main.yaml for notes.
+  export_ply_max_points: null
+  export_ply_voxel_size: null
 
 load:
   pretrain: False

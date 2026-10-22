@@ -412,6 +412,9 @@ class DrivingForwardModel(BaseModel):
 
         # which cameras to include in the exported .ply (None = all cameras)
         export_ply_cams = getattr(self, 'export_ply_cams', None)
+        # optional .ply downsampling (None = keep all points, no thinning)
+        export_ply_max_points = getattr(self, 'export_ply_max_points', None)
+        export_ply_voxel_size = getattr(self, 'export_ply_voxel_size', None)
 
         if self.novel_view_mode == 'MF':
             outputs[('cam', cam)][('gaussian_color', 0, 0)] = \
@@ -423,7 +426,9 @@ class DrivingForwardModel(BaseModel):
                            bg_color=[1.0, 1.0, 1.0],
                            mode=self.novel_view_mode,
                            export_ply_path=export_ply_path,
-                           export_ply_cams=export_ply_cams)
+                           export_ply_cams=export_ply_cams,
+                           export_ply_max_points=export_ply_max_points,
+                           export_ply_voxel_size=export_ply_voxel_size)
         elif self.novel_view_mode == 'SF':
             for i, novel_frame_id in enumerate(self.frame_ids[1:]):
                 outputs[('cam', cam)][('gaussian_color', novel_frame_id, 0)] = \
@@ -435,5 +440,7 @@ class DrivingForwardModel(BaseModel):
                                bg_color=[1.0, 1.0, 1.0],
                                mode=self.novel_view_mode,
                                export_ply_path=export_ply_path if i == 0 else None,
-                               export_ply_cams=export_ply_cams)
+                               export_ply_cams=export_ply_cams,
+                               export_ply_max_points=export_ply_max_points,
+                               export_ply_voxel_size=export_ply_voxel_size)
 

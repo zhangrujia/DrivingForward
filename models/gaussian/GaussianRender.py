@@ -34,7 +34,8 @@ def _collect_valid_gaussians(outputs, cam, frame_id, i):
     )
 
 def pts2render(inputs, outputs, cam_num, novel_cam, novel_frame_id, bg_color, mode='MF',
-               export_ply_path=None, export_ply_cams=None):
+               export_ply_path=None, export_ply_cams=None,
+               export_ply_max_points=None, export_ply_voxel_size=None):
     bs, _, height, width = inputs[('color', 0, 0)][:, novel_cam, ...].shape
     render_novel_list = []
     for i in range(bs):
@@ -115,6 +116,8 @@ def pts2render(inputs, outputs, cam_num, novel_cam, novel_frame_id, bg_color, mo
                 path=export_ply_path,
                 opacity_is_activated=True,
                 scale_is_activated=True,
+                max_points=export_ply_max_points,
+                voxel_size=export_ply_voxel_size,
             )
 
         novel_FovX_i = outputs[('cam', novel_cam)][('FovX', novel_frame_id, 0)][i]
