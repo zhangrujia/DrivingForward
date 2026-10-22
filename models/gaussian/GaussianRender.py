@@ -34,7 +34,7 @@ def _collect_valid_gaussians(outputs, cam, frame_id, i):
     )
 
 def pts2render(inputs, outputs, cam_num, novel_cam, novel_frame_id, bg_color, mode='MF',
-               export_ply_path=None):
+               export_ply_path=None, export_ply_cams=None):
     bs, _, height, width = inputs[('color', 0, 0)][:, novel_cam, ...].shape
     render_novel_list = []
     for i in range(bs):
@@ -76,33 +76,34 @@ def pts2render(inputs, outputs, cam_num, novel_cam, novel_frame_id, bg_color, mo
         if export_ply_path is not None:
             from .ply_export import export_gaussians_to_ply
 
-            if mode == 'MF':
-                # Rendering only uses novel_cam's prev/next points, but the
-                # exported scene should be the full surround view: aggregate
-                # every camera across both temporal frames. All points are in
-                # the shared world/ego frame (via e2c/c2e extrinsics), so they
-                # align geometrically.
-                exp_xyz, exp_rot, exp_scale, exp_opacity, exp_sh = [], [], [], [], []
-                for cam in range(cam_num):
-                    for frame_id in [-1, 1]:
-                        xyz_v, rot_v, scale_v, opacity_v, sh_v = _collect_valid_gaussians(outputs, cam, frame_id, i)
-                        exp_xyz.append(xyz_v)
-                        exp_rot.append(rot_v)
-                        exp_scale.append(scale_v)
-                        exp_opacity.append(opacity_v)
-                        exp_sh.append(sh_v)
-                export_xyz = torch.concat(exp_xyz, dim=0)
-                export_rot = torch.concat(exp_rot, dim=0)
-                export_scale = torch.concat(exp_scale, dim=0)
-                export_opacity = torch.concat(exp_opacity, dim=0)
-                export_sh = torch.concat(exp_sh, dim=0)
+            # which cameras to export (None -> every camera)
+            if export_ply_cams is None:
+                sel_cams = list(range(cam_num))
             else:
-                # SF already aggregates all cameras into pts_xyz_i etc.
-                export_xyz = pts_xyz_i
-                export_rot = rot_i
-                export_scale = scale_i
-                export_opacity = opacity_i
-                export_sh = sh_i
+                sel_cams = [c for c in export_ply_cams if 0 <= c < cam_num]
+            # temporal frames aggregated into the exported scene depend on mode:
+            # MF predicts Gaussians at prev/next frames; SF at the current frame.
+            exp_frames = [-1, 1] if mode == 'MF' else [0]
+
+            # Aggregate the selected cameras across the relevant temporal
+            # frame(s). All points live in the shared world/ego frame (via the
+            # e2c/c2e extrinsics), so points from different cameras align
+            # geometrically. Selecting a camera subset simply exports fewer
+            # points; nothing is otherwise filtered or removed.
+            exp_xyz, exp_rot, exp_scale, exp_opacity, exp_sh = [], [], [], [], []
+            for cam in sel_cams:
+                for frame_id in exp_frames:
+                    xyz_v, rot_v, scale_v, opacity_v, sh_v = _collect_valid_gaussians(outputs, cam, frame_id, i)
+                    exp_xyz.append(xyz_v)
+                    exp_rot.append(rot_v)
+                    exp_scale.append(scale_v)
+                    exp_opacity.append(opacity_v)
+                    exp_sh.append(sh_v)
+            export_xyz = torch.concat(exp_xyz, dim=0)
+            export_rot = torch.concat(exp_rot, dim=0)
+            export_scale = torch.concat(exp_scale, dim=0)
+            export_opacity = torch.concat(exp_opacity, dim=0)
+            export_sh = torch.concat(exp_sh, dim=0)
 
             # sh here is [N, d_sh, 3] (channel last), matching the exporter.
             export_gaussians_to_ply(

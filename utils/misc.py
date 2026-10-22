@@ -41,9 +41,51 @@ def get_relcam(cameras):
     return relcam_dict        
     
 
+def parse_export_ply_cams(spec, cameras):
+    """Parse the --export_ply_cams selector into a sorted list of camera indices.
+
+    Args:
+        spec: 'all' (or '' / None) for every camera, otherwise a comma-separated
+              list of camera indices (0-based) and/or camera names
+              (e.g. '0,5' or 'CAM_FRONT,CAM_BACK').
+        cameras: the ordered camera-name list from cfg['data']['cameras'].
+
+    Returns:
+        None if all cameras are selected (default), otherwise a sorted list of
+        unique integer indices into `cameras`.
+    """
+    if spec is None:
+        return None
+    spec = str(spec).strip()
+    if spec == '' or spec.lower() == 'all':
+        return None
+
+    indices = []
+    for tok in spec.split(','):
+        tok = tok.strip()
+        if tok == '':
+            continue
+        if tok.lstrip('-').isdigit():
+            idx = int(tok)
+            if idx < 0 or idx >= len(cameras):
+                raise ValueError(
+                    'export_ply_cams index {} out of range (valid 0..{} for '
+                    'cameras {})'.format(idx, len(cameras) - 1, cameras))
+            indices.append(idx)
+        elif tok in cameras:
+            indices.append(cameras.index(tok))
+        else:
+            raise ValueError(
+                'export_ply_cams: "{}" is neither a valid index (0..{}) nor a '
+                'known camera name {}'.format(tok, len(cameras) - 1, cameras))
+    if not indices:
+        return None
+    return sorted(set(indices))
+
+
 def get_config(config, mode='train', weight_path='./', novel_view_mode='MF',
                debug=False, debug_samples=3, scene=None,
-               make_video=False, video_fps=6):
+               make_video=False, video_fps=6, export_ply_cams='all'):
     """
     This function reads the configuration file and return as dictionary
     """
@@ -77,6 +119,12 @@ def get_config(config, mode='train', weight_path='./', novel_view_mode='MF',
             cfg['eval']['make_video'] = make_video
             cfg['eval']['video_fps'] = video_fps
 
+            # which cameras to include in the exported .ply.
+            # None = all 6 cameras (default full surround view).
+            ply_cam_indices = parse_export_ply_cams(export_ply_cams,
+                                                     cfg['data']['cameras'])
+            cfg['eval']['export_ply_cams'] = ply_cam_indices
+
             # separate output dirs per novel-view mode (SF/MF), scene, and debug
             # run, so results from different runs don't mix / overwrite each other.
             suffix = '_' + novel_view_mode
@@ -89,7 +137,12 @@ def get_config(config, mode='train', weight_path='./', novel_view_mode='MF',
             if 'save_path' in cfg['eval']:
                 cfg['eval']['save_path'] = cfg['eval']['save_path'] + suffix
             if 'export_ply_path' in cfg['eval']:
-                cfg['eval']['export_ply_path'] = cfg['eval']['export_ply_path'] + suffix
+                ply_suffix = suffix
+                # when exporting a subset of cameras, tag the ply dir so partial
+                # exports don't overwrite the full-surround ones.
+                if ply_cam_indices is not None:
+                    ply_suffix += '_cam' + '-'.join(str(c) for c in ply_cam_indices)
+                cfg['eval']['export_ply_path'] = cfg['eval']['export_ply_path'] + ply_suffix
     return cfg
 
     

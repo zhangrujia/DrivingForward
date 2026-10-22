@@ -410,6 +410,9 @@ class DrivingForwardModel(BaseModel):
             import os
             export_ply_path = os.path.join(export_dir, f'{token}.ply')
 
+        # which cameras to include in the exported .ply (None = all cameras)
+        export_ply_cams = getattr(self, 'export_ply_cams', None)
+
         if self.novel_view_mode == 'MF':
             outputs[('cam', cam)][('gaussian_color', 0, 0)] = \
                 pts2render(inputs=inputs, 
@@ -419,7 +422,8 @@ class DrivingForwardModel(BaseModel):
                            novel_frame_id=0,
                            bg_color=[1.0, 1.0, 1.0],
                            mode=self.novel_view_mode,
-                           export_ply_path=export_ply_path)
+                           export_ply_path=export_ply_path,
+                           export_ply_cams=export_ply_cams)
         elif self.novel_view_mode == 'SF':
             for i, novel_frame_id in enumerate(self.frame_ids[1:]):
                 outputs[('cam', cam)][('gaussian_color', novel_frame_id, 0)] = \
@@ -430,5 +434,6 @@ class DrivingForwardModel(BaseModel):
                                novel_frame_id=novel_frame_id, 
                                bg_color=[1.0, 1.0, 1.0],
                                mode=self.novel_view_mode,
-                               export_ply_path=export_ply_path if i == 0 else None)
+                               export_ply_path=export_ply_path if i == 0 else None,
+                               export_ply_cams=export_ply_cams)
 

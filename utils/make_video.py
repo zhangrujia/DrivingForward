@@ -18,6 +18,15 @@ read the pngs). It is safe to import on a CPU-only machine.
 import os
 
 
+def _ffmpeg_available():
+    """Return True if imageio's ffmpeg backend is usable for writing mp4."""
+    try:
+        import imageio_ffmpeg  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
 def _load_png(path):
     """Load a png as an [H, W, 3] uint8 numpy array (drops alpha if present)."""
     import numpy as np
@@ -73,6 +82,17 @@ def make_comparison_videos(save_path, tokens, cameras, fps=6,
     if cam_indices is None:
         cam_indices = list(range(len(cameras)))
 
+    # Decide the writer once. imageio.mimwrite picks a plugin from the file
+    # extension, but if the ffmpeg backend (imageio-ffmpeg) is missing it can
+    # silently fall back to an image plugin (e.g. tifffile) that does not accept
+    # `fps`, which then crashes. Detect that up front.
+    use_ffmpeg = _ffmpeg_available()
+    if not use_ffmpeg:
+        print('[make_video] WARNING: imageio-ffmpeg backend not available, '
+              'cannot encode mp4. Install it with:  pip install imageio-ffmpeg\n'
+              '[make_video] falling back to writing per-frame PNG sequences '
+              'instead (one folder per camera).')
+
     # de-duplicate tokens while preserving order
     seen = set()
     ordered_tokens = []
@@ -100,13 +120,25 @@ def make_comparison_videos(save_path, tokens, cameras, fps=6,
                   f'skipping')
             continue
 
-        out_path = os.path.join(out_dir, f'{cam_name}.mp4')
-        imageio.mimwrite(out_path, frames, fps=fps, quality=8,
-                         macro_block_size=1)
         note = f' ({missing} frames missing images)' if missing else ''
-        print(f'[make_video] {cam_name}: {len(frames)} frames @ {fps}fps '
-              f'-> {out_path}{note}')
-        written.append(out_path)
+        if use_ffmpeg:
+            out_path = os.path.join(out_dir, f'{cam_name}.mp4')
+            # Pin the ffmpeg plugin + format explicitly so the extension-based
+            # plugin guess can never fall back to an image writer.
+            imageio.mimwrite(out_path, frames, format='FFMPEG', fps=fps,
+                             quality=8, macro_block_size=1)
+            print(f'[make_video] {cam_name}: {len(frames)} frames @ {fps}fps '
+                  f'-> {out_path}{note}')
+            written.append(out_path)
+        else:
+            # fallback: dump the side-by-side frames as a numbered PNG sequence
+            frame_dir = os.path.join(out_dir, f'{cam_name}_frames')
+            os.makedirs(frame_dir, exist_ok=True)
+            for fi, fr in enumerate(frames):
+                imageio.imwrite(os.path.join(frame_dir, f'{fi:04d}.png'), fr)
+            print(f'[make_video] {cam_name}: {len(frames)} frames '
+                  f'-> {frame_dir}/*.png{note}')
+            written.append(frame_dir)
 
     if written:
         print(f'[make_video] done. {len(written)} video(s) in {out_dir}')

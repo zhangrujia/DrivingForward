@@ -33,6 +33,11 @@ def parse_args():
                              '(enabled by default in the eval config).')
     parser.add_argument('--video_fps', default=6, type=int,
                         help='frames per second for the generated per-camera videos (default: 6).')
+    parser.add_argument('--export_ply_cams', default='all', type=str,
+                        help='which cameras to include in the exported .ply. "all" (default) exports '
+                             'the full 6-camera surround view. Otherwise pass a comma-separated list '
+                             'of camera indices (0-based) or camera names, e.g. "0", "0,5", '
+                             '"CAM_FRONT" or "CAM_FRONT,CAM_BACK".')
     args = parser.parse_args() 
     return args
 
@@ -54,6 +59,7 @@ if __name__ == '__main__':
 
     cfg = utils.get_config(args.config_file, mode='eval', weight_path=weight_path, novel_view_mode=args.novel_view_mode,
                            debug=args.debug, debug_samples=args.debug_samples, scene=args.scene,
-                           make_video=args.make_video, video_fps=args.video_fps)
+                           make_video=args.make_video, video_fps=args.video_fps,
+                           export_ply_cams=args.export_ply_cams)
         
     test(cfg)
