@@ -20,6 +20,13 @@ def parse_args():
                         help='debug mode: only run a few samples to check the pipeline')
     parser.add_argument('--debug_samples', default=3, type=int,
                         help='number of samples to run in debug mode (default: 3)')
+    parser.add_argument('--scene', default=None, type=str,
+                        help='select a single capture video (nuScenes scene) to run inference on. '
+                             'Accepts a scene index (0-based, e.g. 0..9 for v1.0-mini) or a scene '
+                             'name (e.g. scene-0061). Default: None = run all scenes.')
+    parser.add_argument('--list_scenes', action='store_true',
+                        help='print the available capture videos (scenes) with their index / name / '
+                             'frame count, then exit without running inference.')
     args = parser.parse_args() 
     return args
 
@@ -32,7 +39,14 @@ def test(cfg):
 if __name__ == '__main__':
     args = parse_args()
     weight_path = os.path.join('./pretrained', os.path.normpath(args.weight_path))
+
+    # just list the available capture videos (scenes) and exit
+    if args.list_scenes:
+        from dataset.list_scenes import print_scenes
+        print_scenes(args.config_file)
+        raise SystemExit(0)
+
     cfg = utils.get_config(args.config_file, mode='eval', weight_path=weight_path, novel_view_mode=args.novel_view_mode,
-                           debug=args.debug, debug_samples=args.debug_samples)
+                           debug=args.debug, debug_samples=args.debug_samples, scene=args.scene)
         
     test(cfg)

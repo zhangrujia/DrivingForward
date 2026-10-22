@@ -42,7 +42,7 @@ def get_relcam(cameras):
     
 
 def get_config(config, mode='train', weight_path='./', novel_view_mode='MF',
-               debug=False, debug_samples=3):
+               debug=False, debug_samples=3, scene=None):
     """
     This function reads the configuration file and return as dictionary
     """
@@ -62,6 +62,9 @@ def get_config(config, mode='train', weight_path='./', novel_view_mode='MF',
         cfg['model']['novel_view_mode'] = novel_view_mode
 
         cfg['load']['load_weights_dir'] = weight_path
+
+        # which capture video (scene) to run; None = all scenes (default)
+        cfg['data']['scene'] = scene
             
         if mode == 'eval':
             cfg['ddp']['world_size'] = 1
@@ -71,9 +74,13 @@ def get_config(config, mode='train', weight_path='./', novel_view_mode='MF',
             cfg['eval']['debug'] = debug
             cfg['eval']['debug_samples'] = debug_samples
 
-            # separate output dirs per novel-view mode (SF/MF) and debug run,
-            # so results from different runs don't mix / overwrite each other.
+            # separate output dirs per novel-view mode (SF/MF), scene, and debug
+            # run, so results from different runs don't mix / overwrite each other.
             suffix = '_' + novel_view_mode
+            if scene is not None:
+                # sanitize the scene selector so it is filesystem-safe
+                safe_scene = str(scene).replace('/', '_').replace(' ', '_')
+                suffix += '_scene' + safe_scene
             if debug:
                 suffix += '_debug'
             if 'save_path' in cfg['eval']:

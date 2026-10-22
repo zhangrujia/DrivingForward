@@ -72,6 +72,7 @@ def construct_dataset(cfg, mode, **kwargs):
         dataset = NuScenesdataset(
             cfg['data']['data_path'], split,
             version=cfg['data'].get('version', 'v1.0-mini'),
+            scene=cfg['data'].get('scene', None),
             **dataset_args            
         )
     else:

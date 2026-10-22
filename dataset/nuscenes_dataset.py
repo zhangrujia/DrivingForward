@@ -75,6 +75,7 @@ class NuScenesdataset(Dataset):
                  with_ego_pose=None,
                  with_mask=None,
                  version='v1.0-mini',
+                 scene=None,
                  ):        
         super().__init__()
         self.path = path
@@ -107,6 +108,66 @@ class NuScenesdataset(Dataset):
         # list of scenes for training and validation of model
         with open('dataset/nuscenes/{}.txt'.format(self.split), 'r') as f:
             self.filenames = f.readlines()
+
+        # Optionally restrict to a single capture video (nuScenes scene).
+        # `scene` may be a 0-based index (e.g. "0".."9" for v1.0-mini) or a
+        # scene name (e.g. "scene-0061"). When set, we keep only the sample
+        # tokens that belong to that scene and order them by their temporal
+        # position inside the scene, so inference walks the capture video in
+        # chronological order (a flat split file is not guaranteed to be
+        # ordered that way).
+        self.scene = scene
+        if scene is not None:
+            self.filenames = self._filter_by_scene(scene)
+
+    def _resolve_scene(self, scene):
+        """Resolve a scene selector (index or name) to a nuScenes scene dict."""
+        scene_str = str(scene).strip()
+        # try as a 0-based index into the ordered scene list first
+        if scene_str.lstrip('-').isdigit():
+            idx = int(scene_str)
+            if idx < 0 or idx >= len(self.dataset.scene):
+                raise ValueError(
+                    'scene index {} out of range: {} has {} scenes (valid 0..{})'.format(
+                        idx, self.dataset.version, len(self.dataset.scene),
+                        len(self.dataset.scene) - 1))
+            return self.dataset.scene[idx]
+        # otherwise match by scene name
+        for sc in self.dataset.scene:
+            if sc['name'] == scene_str:
+                return sc
+        names = ', '.join(sc['name'] for sc in self.dataset.scene)
+        raise ValueError('scene "{}" not found. available scenes: {}'.format(
+            scene_str, names))
+
+    def _filter_by_scene(self, scene):
+        """Keep tokens of the selected scene, ordered chronologically."""
+        target = self._resolve_scene(scene)
+        target_token = target['token']
+
+        # tokens present in the split file (stripped)
+        split_tokens = set(l.strip() for l in self.filenames if l.strip())
+
+        # walk the scene's sample linked-list in temporal order and keep only
+        # the ones that are usable in this split (present in the split file)
+        ordered = []
+        cur = target['first_sample_token']
+        while cur:
+            if cur in split_tokens:
+                ordered.append(cur + '\n')
+            cur = self.dataset.get('sample', cur)['next']
+
+        print('[scene filter] selected scene "{}" (token={}): {} / {} frames '
+              'usable in split "{}"'.format(
+                  target['name'], target_token, len(ordered),
+                  target['nbr_samples'], self.split))
+        if len(ordered) == 0:
+            raise ValueError(
+                'scene "{}" has no usable frames in split "{}". The split '
+                'excludes frames missing required prev/next neighbours; a '
+                'short scene may have none usable.'.format(
+                    target['name'], self.split))
+        return ordered
 
     def get_current(self, key, cam_sample):
         """
