@@ -85,7 +85,8 @@ def parse_export_ply_cams(spec, cameras):
 
 def get_config(config, mode='train', weight_path='./', novel_view_mode='MF',
                debug=False, debug_samples=3, scene=None,
-               make_video=False, video_fps=6, export_ply_cams='all'):
+               make_video=False, video_fps=6, export_ply_cams='all',
+               merge_scene_ply=False, merge_voxel=0.1):
     """
     This function reads the configuration file and return as dictionary
     """
@@ -124,6 +125,8 @@ def get_config(config, mode='train', weight_path='./', novel_view_mode='MF',
             ply_cam_indices = parse_export_ply_cams(export_ply_cams,
                                                      cfg['data']['cameras'])
             cfg['eval']['export_ply_cams'] = ply_cam_indices
+            cfg['eval']['merge_scene_ply'] = merge_scene_ply
+            cfg['eval']['merge_voxel'] = merge_voxel
 
             # separate output dirs per novel-view mode (SF/MF), scene, and debug
             # run, so results from different runs don't mix / overwrite each other.

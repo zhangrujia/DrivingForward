@@ -152,6 +152,23 @@ class DrivingForwardTrainer:
         count = 0
         eval_tokens = []  # processed sample tokens, in evaluation (temporal) order
 
+        # optional: accumulate every frame's Gaussians (transformed into a
+        # shared world frame) to write ONE merged global .ply for the scene.
+        merge_ply = getattr(self, 'merge_scene_ply', False)
+        merge_buf = {'xyz': [], 'rot': [], 'scale': [], 'opacity': [], 'sh': []}
+        merge_nusc = None
+        if merge_ply:
+            try:
+                merge_nusc = eval_dataloader.dataset.dataset  # NuScenes handle
+            except AttributeError:
+                print('[merge_ply] dataset has no nuScenes handle; '
+                      'disabling merge.')
+                merge_ply = False
+            if getattr(self, 'scene', None) is None:
+                print('[merge_ply] WARNING: --scene not set. Merging frames '
+                      'across different scenes shares one world frame only '
+                      'within a scene; cross-scene clouds will not align.')
+
         process = tqdm(eval_dataloader)
         debug = getattr(self, 'debug', False)
         debug_samples = getattr(self, 'debug_samples', 3)
@@ -167,6 +184,9 @@ class DrivingForwardTrainer:
             avg_reconstruction_metric['lpips'] += lpips
             count += 1
             eval_tokens.append(inputs['token'][0])
+
+            if merge_ply:
+                self._accumulate_scene_ply(inputs, outputs, merge_nusc, merge_buf)
 
             process.set_description(f"PSNR: {psnr:.4f}, SSIM: {ssim:.4f}, LPIPS: {lpips:.4f}")
 
@@ -190,6 +210,92 @@ class DrivingForwardTrainer:
         # from the images just saved during evaluation.
         if getattr(self, 'make_video', False):
             self._make_eval_videos(eval_tokens)
+
+        # optionally write ONE merged global .ply for the whole scene.
+        if merge_ply:
+            self._write_merged_scene_ply(merge_buf)
+
+    def _accumulate_scene_ply(self, inputs, outputs, nusc, buf):
+        """Collect this frame's selected-camera Gaussians, transform them from
+        the ego frame into the shared world frame (via the nuScenes ego_pose),
+        and append to the merge buffer (kept on CPU to bound GPU memory)."""
+        import torch
+        import numpy as np
+        from pyquaternion import Quaternion
+        from models.gaussian.GaussianRender import _collect_valid_gaussians
+        from models.gaussian.transform_util import (transform_gaussians_to_world,
+                                                    voxel_downsample)
+
+        num_cams = self.num_cams
+        sel_cams = getattr(self, 'export_ply_cams', None)
+        if sel_cams is None:
+            sel_cams = list(range(num_cams))
+
+        # reference camera's ego_pose -> world_from_ego(t) for this frame
+        token = inputs['token'][0]
+        ref_cam = self.cameras[0] if getattr(self, 'cameras', None) else 'CAM_FRONT'
+        sample_nusc = nusc.get('sample', token)
+        ref_sd = nusc.get('sample_data', sample_nusc['data'][ref_cam])
+        ego = nusc.get('ego_pose', ref_sd['ego_pose_token'])
+        w_from_ego = np.eye(4, dtype=np.float64)
+        w_from_ego[:3, :3] = Quaternion(ego['rotation']).rotation_matrix
+        w_from_ego[:3, 3] = np.array(ego['translation'], dtype=np.float64)
+
+        # aggregate selected cameras at the current frame (frame_id 0, ego coords)
+        fx, fr, fsc, fop, fsh = [], [], [], [], []
+        for cam in sel_cams:
+            xyz_v, rot_v, scale_v, opacity_v, sh_v = _collect_valid_gaussians(
+                outputs, cam, 0, 0)
+            fx.append(xyz_v); fr.append(rot_v); fsc.append(scale_v)
+            fop.append(opacity_v); fsh.append(sh_v)
+        xyz = torch.cat(fx, 0); rot = torch.cat(fr, 0); scale = torch.cat(fsc, 0)
+        opacity = torch.cat(fop, 0); sh = torch.cat(fsh, 0)
+
+        xyz_w, rot_w, scale_w, op_w, sh_w = transform_gaussians_to_world(
+            xyz, rot, scale, opacity, sh, w_from_ego, rotate_sh_flag=False)
+
+        # per-frame voxel downsample to bound memory while merging
+        voxel = getattr(self, 'merge_voxel', 0.1)
+        keep = voxel_downsample(xyz_w, voxel)
+        buf['xyz'].append(xyz_w[keep].cpu())
+        buf['rot'].append(rot_w[keep].cpu())
+        buf['scale'].append(scale_w[keep].cpu())
+        buf['opacity'].append(op_w[keep].cpu())
+        buf['sh'].append(sh_w[keep].cpu())
+
+    def _write_merged_scene_ply(self, buf):
+        """Concatenate all accumulated frames, global voxel-downsample, and
+        write a single global .ply for the scene."""
+        import os
+        import torch
+        from models.gaussian.ply_export import export_gaussians_to_ply
+        from models.gaussian.transform_util import voxel_downsample
+
+        if not buf['xyz']:
+            print('[merge_ply] no frames accumulated; nothing to write.')
+            return
+
+        xyz = torch.cat(buf['xyz'], 0)
+        rot = torch.cat(buf['rot'], 0)
+        scale = torch.cat(buf['scale'], 0)
+        opacity = torch.cat(buf['opacity'], 0)
+        sh = torch.cat(buf['sh'], 0)
+        print(f'\n[merge_ply] merged gaussians (pre-global-voxel): '
+              f'{xyz.shape[0]:,}')
+
+        voxel = getattr(self, 'merge_voxel', 0.1)
+        keep = voxel_downsample(xyz, voxel)
+        xyz, rot, scale, opacity, sh = (xyz[keep], rot[keep], scale[keep],
+                                        opacity[keep], sh[keep])
+        print(f'[merge_ply] after global voxel ({voxel} m): {xyz.shape[0]:,}')
+
+        # output under the ply export dir, named scene_merged.ply
+        out_dir = getattr(self, 'export_ply_path', './results/ply')
+        out_path = os.path.join(out_dir, 'scene_merged.ply')
+        n_written, path = export_gaussians_to_ply(
+            xyz=xyz, rotation=rot, scale=scale, opacity=opacity, sh=sh,
+            path=out_path, opacity_is_activated=True, scale_is_activated=True)
+        print(f'[merge_ply] wrote {n_written:,} gaussians -> {path}')
 
     def _make_eval_videos(self, eval_tokens):
         """Encode one side-by-side (left=GT, right=prediction) mp4 per camera

@@ -38,6 +38,15 @@ def parse_args():
                              'the full 6-camera surround view. Otherwise pass a comma-separated list '
                              'of camera indices (0-based) or camera names, e.g. "0", "0,5", '
                              '"CAM_FRONT" or "CAM_FRONT,CAM_BACK".')
+    parser.add_argument('--merge_scene_ply', action='store_true',
+                        help='after inference, merge every evaluated frame into a SINGLE global .ply '
+                             'for the whole scene: each frame\'s Gaussians are transformed from its ego '
+                             'frame into a shared world frame via the nuScenes ego_pose, then '
+                             'concatenated. Use together with --scene (merging across different scenes '
+                             'is not geometrically meaningful). Respects --export_ply_cams.')
+    parser.add_argument('--merge_voxel', default=0.1, type=float,
+                        help='voxel size (meters) for downsampling the merged global .ply; <=0 disables '
+                             '(default: 0.1).')
     args = parser.parse_args() 
     return args
 
@@ -60,6 +69,7 @@ if __name__ == '__main__':
     cfg = utils.get_config(args.config_file, mode='eval', weight_path=weight_path, novel_view_mode=args.novel_view_mode,
                            debug=args.debug, debug_samples=args.debug_samples, scene=args.scene,
                            make_video=args.make_video, video_fps=args.video_fps,
-                           export_ply_cams=args.export_ply_cams)
+                           export_ply_cams=args.export_ply_cams,
+                           merge_scene_ply=args.merge_scene_ply, merge_voxel=args.merge_voxel)
         
     test(cfg)
