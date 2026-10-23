@@ -353,14 +353,26 @@ class DrivingForwardTrainer:
                 [np.load(s['path'])['xyz'] for s in shards], axis=0)
             keep_global = voxel_downsample(torch.from_numpy(xyz_all), voxel)
             keep_global = keep_global.cpu().numpy()
-            del xyz_all
 
             # a boolean mask over the global (shard-concatenated) index space
             total = ctx['total']
             keep_mask = np.zeros(total, dtype=bool)
             keep_mask[keep_global] = True
             n_final = int(keep_mask.sum())
-            del keep_global
+
+            # Recenter: nuScenes ego_pose lives in a global map frame, so the
+            # merged cloud sits hundreds of metres from the origin. Web viewers
+            # frame the camera at (0,0,0), putting the cloud off-screen (black
+            # screen). Subtract the centroid of the KEPT points so the cloud is
+            # centered at the origin while preserving inter-frame alignment.
+            recenter = getattr(self, 'merge_recenter', True)
+            if recenter:
+                center = xyz_all[keep_global].mean(axis=0).astype(np.float32)
+                print(f'[merge_ply] recentering cloud by centroid '
+                      f'({center[0]:.2f}, {center[1]:.2f}, {center[2]:.2f})')
+            else:
+                center = np.zeros(3, dtype=np.float32)
+            del keep_global, xyz_all
             print(f'[merge_ply] after global voxel ({voxel} m): {n_final:,}')
 
             # peek d_sh from the first shard
@@ -380,8 +392,9 @@ class DrivingForwardTrainer:
                     continue
                 with np.load(s['path']) as z:
                     sel = np.nonzero(local_mask)[0]
+                    xyz_sel = z['xyz'][sel].astype(np.float32) - center
                     writer.append(
-                        xyz=z['xyz'][sel],
+                        xyz=xyz_sel,
                         rotation=z['rot'][sel],
                         scale=z['scale'][sel],
                         opacity=z['opacity'][sel],
