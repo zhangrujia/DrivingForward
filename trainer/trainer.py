@@ -163,14 +163,20 @@ class DrivingForwardTrainer:
         merge_ply = getattr(self, 'merge_scene_ply', False)
         merge_ctx = None
         merge_nusc = None
+        merge_colmap = None
         if merge_ply:
-            try:
-                merge_nusc = eval_dataloader.dataset.dataset  # NuScenes handle
-            except AttributeError:
-                print('[merge_ply] dataset has no nuScenes handle; '
-                      'disabling merge.')
+            ds = eval_dataloader.dataset
+            # nuScenes nests the NuScenes handle at dataset.dataset; colmap
+            # exposes its pose tables directly on the dataset object.
+            if hasattr(ds, 'dataset'):
+                merge_nusc = ds.dataset              # NuScenes handle
+            elif hasattr(ds, 'poses') and hasattr(ds, 'cam_meta'):
+                merge_colmap = ds                    # ColmapDataset
+            else:
+                print('[merge_ply] dataset supports neither nuScenes nor '
+                      'colmap pose lookup; disabling merge.')
                 merge_ply = False
-            if getattr(self, 'scene', None) is None:
+            if merge_nusc is not None and getattr(self, 'scene', None) is None:
                 print('[merge_ply] WARNING: --scene not set. Merging frames '
                       'across different scenes shares one world frame only '
                       'within a scene; cross-scene clouds will not align.')
@@ -200,7 +206,8 @@ class DrivingForwardTrainer:
             eval_tokens.append(inputs['token'][0])
 
             if merge_ply:
-                self._accumulate_scene_ply(inputs, outputs, merge_nusc, merge_ctx)
+                self._accumulate_scene_ply(inputs, outputs, merge_nusc,
+                                           merge_colmap, merge_ctx)
 
             process.set_description(f"PSNR: {psnr:.4f}, SSIM: {ssim:.4f}, LPIPS: {lpips:.4f}")
 
@@ -229,7 +236,53 @@ class DrivingForwardTrainer:
         if merge_ply:
             self._write_merged_scene_ply(merge_ctx)
 
-    def _accumulate_scene_ply(self, inputs, outputs, nusc, ctx):
+    def _colmap_world_from_ego(self, colmap, token):
+        """Compute the vehicle(ego)->world 4x4 transform for a colmap frame.
+
+        The Gaussian points are in the vehicle frame. colmap gives, per camera:
+          - world_from_cam (camera pose in world), from images.txt
+          - cam_to_vehicle (sensor->vehicle extrinsic), from cameras.json
+        so for the reference camera:
+          world_from_ego = world_from_cam @ inv(cam_to_vehicle)
+
+        `token` is the extension-stripped frame name (e.g. '0000_5366...');
+        colmap.poses is keyed by '<camera>/<frame_name_with_ext>'. We find the
+        reference camera's full frame name by matching the token prefix.
+
+        Returns a 4x4 float64 matrix, or None if the pose can't be resolved.
+        """
+        import os
+        import numpy as np
+
+        cameras = getattr(colmap, 'cameras', None)
+        if not cameras:
+            return None
+        ref_cam = cameras[0]
+
+        # find the full frame filename for the reference camera whose name
+        # (without extension) equals the token
+        frames = getattr(colmap, 'frames', None)
+        frame_name = None
+        if frames is not None:
+            for fr in frames:
+                if os.path.splitext(fr)[0] == token:
+                    frame_name = fr
+                    break
+        if frame_name is None:
+            return None
+
+        key = ref_cam + '/' + frame_name
+        world_from_cam = colmap.poses.get(key)
+        if world_from_cam is None:
+            return None
+
+        cam_to_vehicle = colmap.cam_meta[ref_cam]['cam_to_vehicle'].astype(
+            np.float64)
+        cam_from_vehicle = np.linalg.inv(cam_to_vehicle)
+        world_from_ego = world_from_cam @ cam_from_vehicle
+        return world_from_ego.astype(np.float64)
+
+    def _accumulate_scene_ply(self, inputs, outputs, nusc, colmap, ctx):
         """Collect this frame's selected-camera Gaussians, transform them from
         the ego frame into the shared world frame (via the nuScenes ego_pose),
         voxel-downsample, and FLUSH them to a per-frame shard file on disk.
@@ -260,15 +313,33 @@ class DrivingForwardTrainer:
         if sel_cams is None:
             sel_cams = list(range(num_cams))
 
-        # reference camera's ego_pose -> world_from_ego(t) for this frame
+        # reference camera's pose -> world_from_ego(t) for this frame.
+        # The Gaussian points live in the vehicle (ego) frame, so we need the
+        # vehicle->world transform at this timestamp. The source differs by
+        # dataset:
+        #   - nuScenes: ego_pose table gives world_from_ego directly.
+        #   - colmap:   images.txt gives world_from_cam (per camera) and
+        #               cameras.json gives cam_to_vehicle; combine them as
+        #               world_from_ego = world_from_cam @ inv(cam_to_vehicle).
         token = inputs['token'][0]
-        ref_cam = self.cameras[0] if getattr(self, 'cameras', None) else 'CAM_FRONT'
-        sample_nusc = nusc.get('sample', token)
-        ref_sd = nusc.get('sample_data', sample_nusc['data'][ref_cam])
-        ego = nusc.get('ego_pose', ref_sd['ego_pose_token'])
-        w_from_ego = np.eye(4, dtype=np.float64)
-        w_from_ego[:3, :3] = Quaternion(ego['rotation']).rotation_matrix
-        w_from_ego[:3, 3] = np.array(ego['translation'], dtype=np.float64)
+        if nusc is not None:
+            ref_cam = (self.cameras[0] if getattr(self, 'cameras', None)
+                       else 'CAM_FRONT')
+            sample_nusc = nusc.get('sample', token)
+            ref_sd = nusc.get('sample_data', sample_nusc['data'][ref_cam])
+            ego = nusc.get('ego_pose', ref_sd['ego_pose_token'])
+            w_from_ego = np.eye(4, dtype=np.float64)
+            w_from_ego[:3, :3] = Quaternion(ego['rotation']).rotation_matrix
+            w_from_ego[:3, 3] = np.array(ego['translation'], dtype=np.float64)
+        elif colmap is not None:
+            w_from_ego = self._colmap_world_from_ego(colmap, token)
+            if w_from_ego is None:
+                print(f'[merge_ply] colmap: no pose for token {token}; '
+                      f'skipping frame.')
+                return
+        else:
+            print('[merge_ply] no pose source available; skipping frame.')
+            return
 
         # aggregate selected cameras' Gaussians for this sample.
         #
