@@ -246,6 +246,15 @@ class DrivingForwardTrainer:
         from models.gaussian.transform_util import (transform_gaussians_to_world,
                                                     voxel_downsample)
 
+        # In debug mode, merge ONLY the first 2 frames so a quick test produces
+        # a tiny .ply (useful for diagnosing the black-screen / viewer issue).
+        if getattr(self, 'debug', False):
+            DEBUG_MERGE_FRAMES = 2
+            if len(ctx['shards']) >= DEBUG_MERGE_FRAMES:
+                return
+            print(f'[merge_ply][DEBUG] accumulating frame '
+                  f'{len(ctx["shards"]) + 1}/{DEBUG_MERGE_FRAMES}')
+
         num_cams = self.num_cams
         sel_cams = getattr(self, 'export_ply_cams', None)
         if sel_cams is None:
