@@ -80,6 +80,156 @@ def _downsample_indices(xyz, max_points=None, voxel_size=None, seed=0):
     return idx
 
 
+def _to_np(x):
+    if isinstance(x, torch.Tensor):
+        return x.detach().float().cpu().numpy()
+    return np.asarray(x, dtype=np.float32)
+
+
+def gaussians_to_official_columns(xyz, rotation, scale, opacity, sh,
+                                  opacity_is_activated=True,
+                                  scale_is_activated=True):
+    """Convert one chunk of Gaussians into the official per-point column blocks.
+
+    Returns (blocks, d_sh) where `blocks` is the ordered tuple of float32
+    numpy arrays
+        (xyz, normals, f_dc, f_rest, opacity_store, scale_store, rotation)
+    laid out EXACTLY in the order of `_build_attribute_list(d_sh)`. Both the
+    one-shot and the streaming writers consume this, so the on-disk byte layout
+    is guaranteed identical between them.
+    """
+    xyz = _to_np(xyz)                        # [n, 3]
+    rotation = _to_np(rotation)              # [n, 4]
+    scale = _to_np(scale)                    # [n, 3]
+    opacity = _to_np(opacity).reshape(-1, 1)  # [n, 1]
+    sh = _to_np(sh)                          # [n, d_sh, 3]
+
+    n = xyz.shape[0]
+    d_sh = sh.shape[1]
+
+    # SH split into DC (deg 0) and the rest, in official channel-major order.
+    f_dc = sh[:, 0, :]                       # [n, 3]
+    f_rest = sh[:, 1:, :]                    # [n, d_sh-1, 3]
+    f_rest = np.transpose(f_rest, (0, 2, 1))             # [n, 3, d_sh-1]
+    f_rest = np.ascontiguousarray(f_rest).reshape(n, -1)  # [n, 3*(d_sh-1)]
+
+    if opacity_is_activated:
+        eps = 1e-6
+        o = np.clip(opacity, eps, 1 - eps)
+        opacity_store = np.log(o / (1 - o))
+    else:
+        opacity_store = opacity
+
+    if scale_is_activated:
+        scale_store = np.log(np.clip(scale, 1e-8, None))
+    else:
+        scale_store = scale
+
+    normals = np.zeros((n, 3), dtype=np.float32)
+
+    blocks = (xyz, normals, f_dc, f_rest, opacity_store, scale_store, rotation)
+    return blocks, d_sh
+
+
+def _blocks_to_packed_rows(blocks, n):
+    """Stack the ordered column blocks into a contiguous [n, D] float32 array.
+
+    D = total attribute count. Column order matches _build_attribute_list.
+    """
+    cols = []
+    for block in blocks:
+        block = np.ascontiguousarray(block, dtype=np.float32)
+        if block.ndim == 1:
+            block = block.reshape(n, 1)
+        cols.append(block)
+    return np.ascontiguousarray(np.concatenate(cols, axis=1), dtype=np.float32)
+
+
+class StreamingPlyWriter:
+    """Write a binary-little-endian .ply incrementally, chunk by chunk.
+
+    The PLY header must declare the vertex count up front, so the TOTAL number
+    of points has to be known before the first chunk is written. Pass it to the
+    constructor. After that, call append(...) for each chunk of Gaussians; each
+    chunk's rows are packed and flushed straight to disk, so peak memory is
+    bounded by one chunk (plus the file buffer) instead of the whole cloud.
+
+    Usage:
+        w = StreamingPlyWriter(path, total_points=N, d_sh=D_SH)
+        for chunk in chunks:
+            w.append(xyz_c, rot_c, scale_c, opacity_c, sh_c)
+        w.close()   # verifies the written count matches total_points
+    """
+
+    def __init__(self, path, total_points, d_sh,
+                 opacity_is_activated=True, scale_is_activated=True):
+        import os
+        self.path = path
+        self.total_points = int(total_points)
+        self.d_sh = int(d_sh)
+        self.opacity_is_activated = opacity_is_activated
+        self.scale_is_activated = scale_is_activated
+        self.attrs = _build_attribute_list(self.d_sh)
+        self.written = 0
+
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        self._f = open(path, 'wb')
+        self._write_header()
+
+    def _write_header(self):
+        lines = ['ply', 'format binary_little_endian 1.0',
+                 f'element vertex {self.total_points}']
+        for a in self.attrs:
+            lines.append(f'property float {a}')
+        lines.append('end_header\n')
+        self._f.write(('\n'.join(lines)).encode('ascii'))
+
+    def append(self, xyz, rotation, scale, opacity, sh):
+        blocks, d_sh = gaussians_to_official_columns(
+            xyz, rotation, scale, opacity, sh,
+            opacity_is_activated=self.opacity_is_activated,
+            scale_is_activated=self.scale_is_activated)
+        if d_sh != self.d_sh:
+            raise ValueError(f'd_sh mismatch: chunk has {d_sh}, '
+                             f'writer expects {self.d_sh}')
+        n = blocks[0].shape[0]
+        if n == 0:
+            return
+        rows = _blocks_to_packed_rows(blocks, n)   # [n, D] float32, C-contiguous
+        if rows.shape[1] != len(self.attrs):
+            raise ValueError(f'column count mismatch: {rows.shape[1]} vs '
+                             f'{len(self.attrs)}')
+        if self.written + n > self.total_points:
+            raise ValueError(f'appended more points ({self.written + n}) than '
+                             f'declared total ({self.total_points})')
+        # binary_little_endian float32 rows, tightly packed
+        self._f.write(rows.astype('<f4', copy=False).tobytes())
+        self.written += n
+
+    def close(self):
+        self._f.close()
+        if self.written != self.total_points:
+            raise ValueError(
+                f'StreamingPlyWriter: wrote {self.written} points but header '
+                f'declared {self.total_points}. The .ply is corrupt.')
+        return self.written, self.path
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        # On a clean exit, close() validates the count; on error just release
+        # the file handle without the count assertion.
+        if exc_type is None:
+            self.close()
+        else:
+            try:
+                self._f.close()
+            except Exception:
+                pass
+        return False
+
+
 def export_gaussians_to_ply(xyz, rotation, scale, opacity, sh, path,
                             opacity_is_activated=True, scale_is_activated=True,
                             max_points=None, voxel_size=None):
@@ -121,43 +271,11 @@ def export_gaussians_to_ply(xyz, rotation, scale, opacity, sh, path,
             sh = sh[sel]
     # (numpy inputs: skip tensor-side downsampling; handled below if needed)
 
-    def to_np(x):
-        if isinstance(x, torch.Tensor):
-            return x.detach().float().cpu().numpy()
-        return np.asarray(x, dtype=np.float32)
-
-    xyz = to_np(xyz)                       # [N, 3]
-    rotation = to_np(rotation)             # [N, 4]
-    scale = to_np(scale)                   # [N, 3]
-    opacity = to_np(opacity).reshape(-1, 1)  # [N, 1]
-    sh = to_np(sh)                         # [N, d_sh, 3]
-
-    n = xyz.shape[0]
-    d_sh = sh.shape[1]
-
-    # --- SH split into DC (deg 0) and the rest, in official channel-major order ---
-    # sh: [N, d_sh, 3] -> DC [N, 3] (the deg-0 coeff per channel)
-    f_dc = sh[:, 0, :]                     # [N, 3]
-    # rest: [N, d_sh-1, 3] -> transpose to [N, 3, d_sh-1] -> flatten channel-major
-    f_rest = sh[:, 1:, :]                  # [N, d_sh-1, 3]
-    f_rest = np.transpose(f_rest, (0, 2, 1))          # [N, 3, d_sh-1]
-    f_rest = np.ascontiguousarray(f_rest).reshape(n, -1)  # [N, 3*(d_sh-1)]
-
-    # --- opacity: store as logit if currently activated (in [0,1]) ---
-    if opacity_is_activated:
-        eps = 1e-6
-        o = np.clip(opacity, eps, 1 - eps)
-        opacity_store = np.log(o / (1 - o))
-    else:
-        opacity_store = opacity
-
-    # --- scale: store as log if currently linear ---
-    if scale_is_activated:
-        scale_store = np.log(np.clip(scale, 1e-8, None))
-    else:
-        scale_store = scale
-
-    normals = np.zeros((n, 3), dtype=np.float32)
+    blocks, d_sh = gaussians_to_official_columns(
+        xyz, rotation, scale, opacity, sh,
+        opacity_is_activated=opacity_is_activated,
+        scale_is_activated=scale_is_activated)
+    n = blocks[0].shape[0]
 
     attrs = _build_attribute_list(d_sh)
     dtype = [(a, 'f4') for a in attrs]
@@ -168,7 +286,7 @@ def export_gaussians_to_ply(xyz, rotation, scale, opacity, sh, path,
     # result (which, together with `elements`, doubled the peak memory and was
     # the source of the MemoryError on large scenes).
     col = 0
-    for block in (xyz, normals, f_dc, f_rest, opacity_store, scale_store, rotation):
+    for block in blocks:
         block = np.ascontiguousarray(block, dtype=np.float32)
         if block.ndim == 1:
             block = block.reshape(n, 1)

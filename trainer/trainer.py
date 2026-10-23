@@ -154,8 +154,14 @@ class DrivingForwardTrainer:
 
         # optional: accumulate every frame's Gaussians (transformed into a
         # shared world frame) to write ONE merged global .ply for the scene.
+        #
+        # To keep peak host memory bounded regardless of how many frames the
+        # scene has, each frame's (voxel-downsampled) Gaussians are flushed to a
+        # per-frame shard file on disk immediately, instead of being held in a
+        # growing in-RAM list. At the end we stream the shards back and write
+        # the final .ply chunk-by-chunk (see _write_merged_scene_ply).
         merge_ply = getattr(self, 'merge_scene_ply', False)
-        merge_buf = {'xyz': [], 'rot': [], 'scale': [], 'opacity': [], 'sh': []}
+        merge_ctx = None
         merge_nusc = None
         if merge_ply:
             try:
@@ -168,6 +174,14 @@ class DrivingForwardTrainer:
                 print('[merge_ply] WARNING: --scene not set. Merging frames '
                       'across different scenes shares one world frame only '
                       'within a scene; cross-scene clouds will not align.')
+        if merge_ply:
+            import os
+            import tempfile
+            out_dir = getattr(self, 'export_ply_path', './results/ply')
+            os.makedirs(out_dir, exist_ok=True)
+            shard_dir = tempfile.mkdtemp(prefix='merge_ply_shards_', dir=out_dir)
+            merge_ctx = {'shard_dir': shard_dir, 'shards': [], 'total': 0}
+            print(f'[merge_ply] streaming per-frame shards to {shard_dir}')
 
         process = tqdm(eval_dataloader)
         debug = getattr(self, 'debug', False)
@@ -186,7 +200,7 @@ class DrivingForwardTrainer:
             eval_tokens.append(inputs['token'][0])
 
             if merge_ply:
-                self._accumulate_scene_ply(inputs, outputs, merge_nusc, merge_buf)
+                self._accumulate_scene_ply(inputs, outputs, merge_nusc, merge_ctx)
 
             process.set_description(f"PSNR: {psnr:.4f}, SSIM: {ssim:.4f}, LPIPS: {lpips:.4f}")
 
@@ -213,12 +227,18 @@ class DrivingForwardTrainer:
 
         # optionally write ONE merged global .ply for the whole scene.
         if merge_ply:
-            self._write_merged_scene_ply(merge_buf)
+            self._write_merged_scene_ply(merge_ctx)
 
-    def _accumulate_scene_ply(self, inputs, outputs, nusc, buf):
+    def _accumulate_scene_ply(self, inputs, outputs, nusc, ctx):
         """Collect this frame's selected-camera Gaussians, transform them from
         the ego frame into the shared world frame (via the nuScenes ego_pose),
-        and append to the merge buffer (kept on CPU to bound GPU memory)."""
+        voxel-downsample, and FLUSH them to a per-frame shard file on disk.
+
+        Flushing each frame immediately (instead of holding it in RAM) keeps
+        the peak host-memory footprint bounded by a single frame regardless of
+        how many frames the scene contains. The final .ply is assembled later
+        by _write_merged_scene_ply, which streams these shards back."""
+        import os
         import torch
         import numpy as np
         from pyquaternion import Quaternion
@@ -257,45 +277,98 @@ class DrivingForwardTrainer:
         # per-frame voxel downsample to bound memory while merging
         voxel = getattr(self, 'merge_voxel', 0.1)
         keep = voxel_downsample(xyz_w, voxel)
-        buf['xyz'].append(xyz_w[keep].cpu())
-        buf['rot'].append(rot_w[keep].cpu())
-        buf['scale'].append(scale_w[keep].cpu())
-        buf['opacity'].append(op_w[keep].cpu())
-        buf['sh'].append(sh_w[keep].cpu())
 
-    def _write_merged_scene_ply(self, buf):
-        """Concatenate all accumulated frames, global voxel-downsample, and
-        write a single global .ply for the scene."""
+        # flush this frame's surviving Gaussians to a compressed shard on disk
+        shard_idx = len(ctx['shards'])
+        shard_path = os.path.join(ctx['shard_dir'], f'frame_{shard_idx:05d}.npz')
+        np.savez(
+            shard_path,
+            xyz=xyz_w[keep].cpu().numpy().astype(np.float32),
+            rot=rot_w[keep].cpu().numpy().astype(np.float32),
+            scale=scale_w[keep].cpu().numpy().astype(np.float32),
+            opacity=op_w[keep].cpu().numpy().astype(np.float32),
+            sh=sh_w[keep].cpu().numpy().astype(np.float32),
+        )
+        n_shard = int(keep.shape[0])
+        ctx['shards'].append({'path': shard_path, 'n': n_shard})
+        ctx['total'] += n_shard
+
+    def _write_merged_scene_ply(self, ctx):
+        """Assemble the final global .ply by STREAMING the per-frame shards
+        from disk, so the whole cloud is never materialised in RAM at once.
+
+        Two passes:
+          1. Load only each shard's xyz (one column, cheap), concatenate, and
+             run the global voxel downsample to decide which points survive.
+          2. Stream the shards again; for each, select its surviving points and
+             append them to a StreamingPlyWriter that flushes straight to disk.
+        """
         import os
+        import shutil
+        import numpy as np
         import torch
-        from models.gaussian.ply_export import export_gaussians_to_ply
+        from models.gaussian.ply_export import StreamingPlyWriter
         from models.gaussian.transform_util import voxel_downsample
 
-        if not buf['xyz']:
+        shards = ctx['shards'] if ctx else []
+        if not shards:
             print('[merge_ply] no frames accumulated; nothing to write.')
+            if ctx and os.path.isdir(ctx['shard_dir']):
+                shutil.rmtree(ctx['shard_dir'], ignore_errors=True)
             return
 
-        xyz = torch.cat(buf['xyz'], 0)
-        rot = torch.cat(buf['rot'], 0)
-        scale = torch.cat(buf['scale'], 0)
-        opacity = torch.cat(buf['opacity'], 0)
-        sh = torch.cat(buf['sh'], 0)
-        print(f'\n[merge_ply] merged gaussians (pre-global-voxel): '
-              f'{xyz.shape[0]:,}')
-
         voxel = getattr(self, 'merge_voxel', 0.1)
-        keep = voxel_downsample(xyz, voxel)
-        xyz, rot, scale, opacity, sh = (xyz[keep], rot[keep], scale[keep],
-                                        opacity[keep], sh[keep])
-        print(f'[merge_ply] after global voxel ({voxel} m): {xyz.shape[0]:,}')
-
-        # output under the ply export dir, named scene_merged.ply
         out_dir = getattr(self, 'export_ply_path', './results/ply')
         out_path = os.path.join(out_dir, 'scene_merged.ply')
-        n_written, path = export_gaussians_to_ply(
-            xyz=xyz, rotation=rot, scale=scale, opacity=opacity, sh=sh,
-            path=out_path, opacity_is_activated=True, scale_is_activated=True)
-        print(f'[merge_ply] wrote {n_written:,} gaussians -> {path}')
+
+        try:
+            # --- pass 1: global voxel downsample using only xyz ---------------
+            print(f'\n[merge_ply] merged gaussians (pre-global-voxel): '
+                  f'{ctx["total"]:,}')
+            xyz_all = np.concatenate(
+                [np.load(s['path'])['xyz'] for s in shards], axis=0)
+            keep_global = voxel_downsample(torch.from_numpy(xyz_all), voxel)
+            keep_global = keep_global.cpu().numpy()
+            del xyz_all
+
+            # a boolean mask over the global (shard-concatenated) index space
+            total = ctx['total']
+            keep_mask = np.zeros(total, dtype=bool)
+            keep_mask[keep_global] = True
+            n_final = int(keep_mask.sum())
+            del keep_global
+            print(f'[merge_ply] after global voxel ({voxel} m): {n_final:,}')
+
+            # peek d_sh from the first shard
+            with np.load(shards[0]['path']) as z0:
+                d_sh = int(z0['sh'].shape[1])
+
+            # --- pass 2: stream each shard, select survivors, append ----------
+            writer = StreamingPlyWriter(
+                out_path, total_points=n_final, d_sh=d_sh,
+                opacity_is_activated=True, scale_is_activated=True)
+            offset = 0
+            for s in shards:
+                n = s['n']
+                local_mask = keep_mask[offset:offset + n]
+                offset += n
+                if not local_mask.any():
+                    continue
+                with np.load(s['path']) as z:
+                    sel = np.nonzero(local_mask)[0]
+                    writer.append(
+                        xyz=z['xyz'][sel],
+                        rotation=z['rot'][sel],
+                        scale=z['scale'][sel],
+                        opacity=z['opacity'][sel],
+                        sh=z['sh'][sel],
+                    )
+            n_written, path = writer.close()
+            print(f'[merge_ply] wrote {n_written:,} gaussians -> {path}')
+        finally:
+            # clean up the temporary shard directory
+            if os.path.isdir(ctx['shard_dir']):
+                shutil.rmtree(ctx['shard_dir'], ignore_errors=True)
 
     def _make_eval_videos(self, eval_tokens):
         """Encode one side-by-side (left=GT, right=prediction) mp4 per camera
