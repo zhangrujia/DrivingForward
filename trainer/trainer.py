@@ -343,7 +343,12 @@ class DrivingForwardTrainer:
 
         voxel = getattr(self, 'merge_voxel', 0.1)
         out_dir = getattr(self, 'export_ply_path', './results/ply')
-        out_path = os.path.join(out_dir, 'scene_merged.ply')
+        # include the voxel size in the filename so runs with different
+        # --merge_voxel values don't overwrite each other. Replace the decimal
+        # point with 'p' so the filename has no extra dots (0 -> "0",
+        # 0.1 -> "0p1", 0.5 -> "0p5", 0.25 -> "0p25").
+        voxel_tag = f'{voxel:g}'.replace('.', 'p')
+        out_path = os.path.join(out_dir, f'scene_merged_voxel{voxel_tag}.ply')
 
         try:
             # --- pass 1: global voxel downsample using only xyz ---------------
