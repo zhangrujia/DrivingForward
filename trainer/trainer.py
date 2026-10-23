@@ -270,13 +270,28 @@ class DrivingForwardTrainer:
         w_from_ego[:3, :3] = Quaternion(ego['rotation']).rotation_matrix
         w_from_ego[:3, 3] = np.array(ego['translation'], dtype=np.float64)
 
-        # aggregate selected cameras at the current frame (frame_id 0, ego coords)
+        # aggregate selected cameras' Gaussians for this sample.
+        #
+        # IMPORTANT: which temporal frame holds the predicted Gaussians depends
+        # on the novel-view mode, and MUST match pts2render:
+        #   - MF: the model predicts Gaussians at the adjacent frames [-1, +1];
+        #         there are NO valid Gaussians at frame_id 0.
+        #   - SF: the model predicts Gaussians at the current frame [0].
+        # Using the wrong frame_id (e.g. always 0 in MF) collects empty/near-
+        # empty points, producing a merged .ply far smaller than a single-frame
+        # export. All these points are already warped into the CURRENT sample's
+        # ego frame (via e2c_extr = cam_T_cam(0, f) @ extrinsics_inv), so the
+        # current-sample ego_pose above is the correct ego->world transform.
+        mode = getattr(self, 'novel_view_mode', 'MF')
+        exp_frames = [-1, 1] if mode == 'MF' else [0]
+
         fx, fr, fsc, fop, fsh = [], [], [], [], []
         for cam in sel_cams:
-            xyz_v, rot_v, scale_v, opacity_v, sh_v = _collect_valid_gaussians(
-                outputs, cam, 0, 0)
-            fx.append(xyz_v); fr.append(rot_v); fsc.append(scale_v)
-            fop.append(opacity_v); fsh.append(sh_v)
+            for frame_id in exp_frames:
+                xyz_v, rot_v, scale_v, opacity_v, sh_v = _collect_valid_gaussians(
+                    outputs, cam, frame_id, 0)
+                fx.append(xyz_v); fr.append(rot_v); fsc.append(scale_v)
+                fop.append(opacity_v); fsh.append(sh_v)
         xyz = torch.cat(fx, 0); rot = torch.cat(fr, 0); scale = torch.cat(fsc, 0)
         opacity = torch.cat(fop, 0); sh = torch.cat(fsh, 0)
 
